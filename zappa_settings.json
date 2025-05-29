@@ -1,0 +1,26 @@
+{
+    "dev": {
+        "app_function": "Lambda.lambda_handler",
+        "aws_region": "us-east-1",
+        "exclude": [
+            "boto3",
+            "dateutil",
+            "botocore",
+            "s3transfer",
+            "concurrent"
+        ],
+        "profile_name": null,
+        "project_name": "get",
+        "runtime": "python3.9",
+        "s3_bucket": "zappa-sfp1spenb",
+        "keep_warm": false,
+        "apigateway_enabled": false,
+        "manage_roles": false,
+        "role_name": "LabRole",
+        "events": [ 
+        { 
+            "function": "Lambda.lambda_handler", 
+            "expression": "rate(1 minute))" 
+        }]
+    }
+}
