@@ -11,7 +11,7 @@ headers = {
 # Diccionario de medios y sus URLs principales
 NEWS_SITES = {
     "eltiempo": "https://www.eltiempo.com/",
-    "elespectador": "https://www.elespectador.com/"
+    "publimetro": "https://www.publimetro.co/"
 }
 
 def download_headlines():

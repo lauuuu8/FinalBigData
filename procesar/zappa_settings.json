@@ -12,7 +12,7 @@
         "profile_name": null,
         "project_name": "procesar",
         "runtime": "python3.9",
-        "s3_bucket": "zappa-67vc0tfju",
+        "s3_bucket": "zappa-sfp1spenb",
         "keep_warm": false,
         "apigateway_enabled": false,
         "manage_roles": false,

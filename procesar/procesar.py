@@ -1,74 +1,139 @@
 import boto3
+import os
 import csv
-import datetime
 from bs4 import BeautifulSoup
+from datetime import datetime
+import urllib.parse
+import json
+import io
 
-s3_client = boto3.client("s3")
-BUCKET_DESTINO = "recibiendo"  # cambia si usas otro bucket
+s3 = boto3.client('s3')
 
-def app(event, context):
-    bucket_origen = event["Records"][0]["s3"]["bucket"]["name"]
-    archivo_html = event["Records"][0]["s3"]["object"]["key"]
-    print(f"Procesando archivo: {archivo_html} desde {bucket_origen}")
+def app(event, context):  # <- Cambiado de lambda_handler a app
+    print("==== Evento recibido por Lambda ====")
+    print(json.dumps(event, indent=2))
+    
+    BUCKET_NAME = os.environ.get('BUCKET_NAME', 'recibiendo')
+    BASE_URLS = {
+        'publimetro': os.environ.get('PUBLIMETRO_URL', 'https://www.publimetro.co'),
+        'eltiempo': os.environ.get('ELTIEMPO_URL', 'https://www.eltiempo.com')
+    }
+    LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
 
-    # Descargar archivo HTML desde S3
-    response = s3_client.get_object(Bucket=bucket_origen, Key=archivo_html)
-    contenido_html = response["Body"].read().decode("utf-8")
-    soup = BeautifulSoup(contenido_html, "html.parser")
+    if 'Records' not in event:
+        error_msg = "Evento no contiene 'Records'. Formato inesperado."
+        print(error_msg)
+        return {
+            "statusCode": 400,
+            "body": json.dumps({"error": error_msg})
+        }
 
-    # Detectar nombre del periódico por el nombre del archivo
-    if "espectador" in archivo_html.lower():
-        periodico = "elespectador"
-    else:
-        periodico = "eltiempo"
+    for record in event['Records']:
+        try:
+            bucket = record['s3']['bucket']['name']
+            key = urllib.parse.unquote_plus(record['s3']['object']['key'])
 
-    noticias = []
+            if not key.startswith('headlines/raw/') or not key.endswith('.html'):
+                print(f"Ignorando archivo no válido para procesamiento: {key}")
+                continue
 
-    # Extraer noticias según el periódico
-    if periodico == "eltiempo":
-        for noticia in soup.select("article"):
-            categoria = noticia.find("a", class_="category")
-            titulo = noticia.find("h3")
-            link = noticia.find("a", href=True)
+            print(f"Procesando archivo S3: bucket={bucket}, key={key}")
 
-            if categoria and titulo and link:
-                noticias.append({
-                    "Categoria": categoria.text.strip(),
-                    "Titular": titulo.text.strip(),
-                    "Link": "https://www.eltiempo.com" + link["href"]
-                })
-    elif periodico == "elespectador":
-        for noticia in soup.select("section article"):
-            categoria = noticia.find("span", class_="section")
-            titulo = noticia.find("h2") or noticia.find("h3")
-            link = noticia.find("a", href=True)
+            response = s3.get_object(Bucket=bucket, Key=key)
+            content = response['Body'].read().decode('utf-8')
+            print(f"Archivo HTML extraído correctamente: {key}")
 
-            if categoria and titulo and link:
-                noticias.append({
-                    "Categoria": categoria.text.strip(),
-                    "Titular": titulo.text.strip(),
-                    "Link": link["href"] if link["href"].startswith("http") else "https://www.elespectador.com" + link["href"]
-                })
+            soup = BeautifulSoup(content, 'html.parser')
+            nombre_archivo = os.path.basename(key)
 
-    # Fecha para la ruta
-    hoy = datetime.datetime.now()
-    year = hoy.strftime("%Y")
-    month = hoy.strftime("%m")
-    day = hoy.strftime("%d")
+            if 'publimetro' in nombre_archivo:
+                periodico = 'publimetro'
+            elif 'eltiempo' in nombre_archivo:
+                periodico = 'eltiempo'
+            else:
+                periodico = 'desconocido'
+                print(f"Periódico no reconocido en el archivo: {nombre_archivo}")
 
-    nombre_csv = archivo_html.replace(".html", ".csv").split("/")[-1]
-    ruta_local = f"/tmp/{nombre_csv}"
-    ruta_s3 = f"headlines/final/periodico={periodico}/year={year}/month={month}/day={day}/{nombre_csv}"
+            noticias = []
 
-    # Crear CSV
-    with open(ruta_local, "w", newline="", encoding="utf-8-sig") as csvfile:
-        campos = ['Categoria', 'Titular', 'Link']
-        writer = csv.DictWriter(csvfile, fieldnames=campos)
-        writer.writeheader()
-        writer.writerows(noticias)
+            for article in soup.find_all('article'):
+                titular_tag = article.find(['h1', 'h2', 'h3'])
+                enlace_tag = article.find('a', href=True)
 
-    # Subir CSV a S3
-    s3_client.upload_file(ruta_local, BUCKET_DESTINO, ruta_s3)
-    print(f"CSV subido a s3://{BUCKET_DESTINO}/{ruta_s3}")
+                if titular_tag and enlace_tag:
+                    titular = titular_tag.get_text(strip=True)
+                    enlace = enlace_tag['href']
+                    
+                    if not enlace.startswith('http'):
+                        enlace = f"{BASE_URLS.get(periodico, '')}{enlace}"
 
-    return {}
+                    categoria = ''
+                    parts = enlace.split('/')
+                    if len(parts) > 3:
+                        categoria = parts[3]
+
+                    noticias.append({
+                        'categoria': categoria,
+                        'titular': titular,
+                        'enlace': enlace
+                    })
+
+            if not noticias:
+                print("No se encontraron artículos válidos en <article>. Se intenta fallback...")
+                for heading in soup.find_all(['h1', 'h2', 'h3']):
+                    a_tag = heading.find('a', href=True)
+                    if a_tag:
+                        titular = heading.get_text(strip=True)
+                        enlace = a_tag['href']
+                        
+                        if not enlace.startswith('http'):
+                            enlace = f"{BASE_URLS.get(periodico, '')}{enlace}"
+
+                        categoria = ''
+                        parts = enlace.split('/')
+                        if len(parts) > 3:
+                            categoria = parts[3]
+
+                        noticias.append({
+                            'categoria': categoria,
+                            'titular': titular,
+                            'enlace': enlace
+                        })
+
+            print(f"Total de noticias extraídas: {len(noticias)} del periódico {periodico}")
+
+            fecha = datetime.utcnow()
+            year = fecha.strftime('%Y')
+            month = fecha.strftime('%m')
+            day = fecha.strftime('%d')
+            hour = fecha.strftime('%H')
+            minute = fecha.strftime('%M')
+
+            csv_key = f"headlines/final/periodico={periodico}/year={year}/month={month}/day={day}/noticias_{hour}-{minute}.csv"
+            print(f"Guardando CSV en: {csv_key}")
+
+            csv_buffer = io.StringIO()
+            writer = csv.DictWriter(csv_buffer, fieldnames=['categoria', 'titular', 'enlace'])
+            writer.writeheader()
+            for noticia in noticias:
+                writer.writerow(noticia)
+
+            s3.put_object(
+                Bucket=bucket,
+                Key=csv_key,
+                Body=csv_buffer.getvalue(),
+                ContentType='text/csv'
+            )
+            print("Archivo CSV subido exitosamente a S3.")
+
+        except Exception as e:
+            print(f"Error procesando el archivo {key}: {str(e)}")
+            continue
+
+    return {
+        "statusCode": 200,
+        "body": json.dumps({
+            "message": "Procesamiento completado",
+            "noticias_procesadas": sum(1 for record in event['Records'] if 's3' in record)
+        })
+    }

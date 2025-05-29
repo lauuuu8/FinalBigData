@@ -20,7 +20,7 @@
         "events": [ 
         { 
             "function": "Lambda.lambda_handler", 
-            "expression": "rate(1 minute))" 
+            "expression": "rate(24 hours)" 
         }]
     }
 }
